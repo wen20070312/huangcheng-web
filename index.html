@@ -254,11 +254,13 @@ b{color:var(--accent);}
         <div class="time-grid">
           <button onclick="advanceTimeMin(30)">快进<span class="sub">半小时</span></button>
           <button onclick="advanceTimeMin(120)">快进<span class="sub">一个时辰</span></button>
-          <button onclick="advanceTimeMin(360)">快进<span class="sub">半天</span></button>
+          <button onclick="advanceTimeMin(720)">快进<span class="sub">半天</span></button>
           <button onclick="advanceTimeMin(1440)">快进<span class="sub">一天</span></button>
+          <button onclick="advanceTimeMin(43200)">快进<span class="sub">一个月</span></button>
+          <button onclick="advanceTimeMin(518400)">快进<span class="sub">一年</span></button>
         </div>
         <div class="section-title">自定义快进：<span id="customMinLabel">60</span> 分钟</div>
-        <input type="range" class="slider" id="customMin" min="10" max="720" step="10" value="60">
+        <input type="range" class="slider" id="customMin" min="10" max="43200" step="10" value="60">
         <button class="btn-primary" style="margin-top:10px" onclick="advanceTimeMin(parseInt(document.getElementById('customMin').value))">快进自定义时间</button>
       </div>
     </div>
@@ -374,7 +376,18 @@ const DEFAULT_STORY_INTRO = "天启五年，程默以禁军兵变废黜天启帝
 const SAVES_KEY = "huangcheng_saves_v1";
 const SETTINGS_KEY = "huangcheng_settings";
 const SHICHEN = ["子","丑","寅","卯","辰","巳","午","未","申","酉","戌","亥"];
+const ERA = "永武"; // 程默年号
 const EDITOR_AVATAR_TARGET = {};
+
+// 中文数字（1-99）
+function cnNum(n){
+  const d = "零一二三四五六七八九";
+  n = parseInt(n) || 0;
+  if(n < 10) return d[n];
+  if(n < 20) return "十" + (n%10 ? d[n%10] : "");
+  if(n < 100) return d[Math.floor(n/10)] + "十" + (n%10 ? d[n%10] : "");
+  return String(n);
+}
 
 let state = null, uid = 0, saves = [], activeSaveId = null;
 
@@ -428,7 +441,7 @@ function freshState(){
   return {
     started:false, selectedIds:[], characters:baseChars.map(c => Object.assign({}, c, {location:c.home})), messages:[], edicts:[],
     playerLocation: baseLocs[0].name,
-    time:{day:1, minutes:20*60},
+    time:{year:1, month:1, day:1, minutes:20*60},
     adultMode:true, apiKey:"", model:"deepseek-flash", contextLimit:80,
     replyTargetIds:[], isThinking:false,
     playerAge:((cfg.player||DEFAULT_PLAYER).age||32),
@@ -460,15 +473,33 @@ function save(){
 }
 
 function timeLabel(t){
+  t = normalizeTime(t);
   const hh = String(Math.floor(t.minutes/60)).padStart(2,"0");
   const mm = String(t.minutes%60).padStart(2,"0");
   const shi = SHICHEN[Math.floor(((Math.floor(t.minutes/60)+1)%24)/2)] + "时";
-  return "第" + t.day + "天 · " + shi + " (" + hh + ":" + mm + ")";
+  return ERA + cnNum(t.year) + "年" + cnNum(t.month) + "月" + cnNum(t.day) + "日 · " + shi + " (" + hh + ":" + mm + ")";
+}
+// 时间结构：{year, month, day, minutes}，每月按 30 天计
+function normalizeTime(t){
+  t = t || {};
+  return { year: t.year||1, month: t.month||1, day: t.day||1, minutes: t.minutes||0 };
 }
 function advanceTime(t, m){
-  let total = t.minutes + m, day = t.day;
+  t = normalizeTime(t);
+  let total = t.minutes + m, day = t.day, month = t.month, year = t.year;
   while(total >= 24*60){ total -= 24*60; day += 1; }
-  return {day, minutes:total};
+  while(day > 30){ day -= 30; month += 1; }
+  while(month > 12){ month -= 12; year += 1; }
+  return { year, month, day, minutes: total };
+}
+// 把分钟数格式化为可读时长
+function fmtDuration(m){
+  m = parseInt(m) || 0;
+  if(m >= 518400) return (m/518400).toFixed(m%518400===0?0:1) + " 年";
+  if(m >= 43200) return (m/43200).toFixed(m%43200===0?0:1) + " 个月";
+  if(m >= 1440) return (m/1440).toFixed(m%1440===0?0:1) + " 天";
+  if(m >= 60) return Math.round(m/60) + " 小时";
+  return m + " 分钟";
 }
 
 function selectedCharacters(){ return state.characters.filter(c => state.selectedIds.includes(c.id)); }
@@ -485,7 +516,7 @@ function toast(msg){
 function issueEdict(text){
   text = text.trim();
   if(!text) return;
-  const edict = {id:"e"+Date.now(), text, time:Object.assign({}, state.time), day:state.time.day};
+  const edict = {id:"e"+Date.now(), text, time:normalizeTime(state.time), timeStr:timeLabel(state.time)};
   if(!state.edicts) state.edicts = [];
   state.edicts.push(edict);
   pushMessage({speakerId:"edict", speakerName:"皇帝圣旨", text, isPlayer:false, isNarration:false, isEdict:true});
@@ -496,54 +527,56 @@ function issueEdict(text){
 // ========== 提示词 ==========
 function buildSystemPrompt(target){
   const pl = getPlayer();
-  let s = "你是角色扮演引擎。玩家扮演" + pl.name + "。严格依据以下设定回应，不跳出角色，不提及自己是AI。\n\n";
-  s += "【背景】" + getStoryIntro() + "\n\n";
-  s += "【地点】以下是当前所有地点及其简介（你必须实时知晓每一个地点，即使它是新出现或刚被修改的）：\n";
-  getLocations().forEach(l => { s += "· " + l.name + "：" + (l.desc||"（无简介）") + "\n"; });
-  s += "角色只有与" + pl.name + "处于同一地点才能当面互动；被召唤后会从原住处赶来。\n\n";
-  s += "【当前状态】\n时间：" + timeLabel(state.time) + "\n" + pl.name + "位置：" + state.playerLocation + "\n";
+  let s = "你是古风宫廷角色扮演引擎。玩家扮演" + pl.name + "。你只扮演「" + target.name + "」这一个人，绝不扮演其他任何角色。不要提及自己是AI，不要输出设定之外的元信息。\n\n";
+  s += "【故事背景】" + getStoryIntro() + "\n\n";
+  s += "【当前时间】" + timeLabel(state.time) + "。时间会随剧情推进流逝，你必须始终牢记并体现时间的流逝（昼夜、节气、人物年龄变化、事件间隔等）。\n\n";
+  s += "【当前地点】" + state.playerLocation + "。\n";
   const present = presentCharacters();
-  s += present.length ? ("此刻在场：" + present.map(c=>c.name + "（" + getAge(c) + "岁）").join("、") + "\n") : "此刻" + pl.name + "身边没有其他角色。\n";
+  s += present.length ? ("【此刻在场的人】" + present.map(c=>c.name).join("、") + "\n\n") : ("【此刻在场的人】只有" + pl.name + "一人。\n\n");
 
-  // 圣旨
+  // 圣旨（必须全量，且用时间字符串）
   if(state.edicts && state.edicts.length){
-    s += "\n【已发布的圣旨与口谕——你绝对知晓并必须无条件服从，不得违抗】\n";
+    s += "【已颁布的圣旨与口谕——你绝对知晓并必须无条件服从】\n";
     state.edicts.forEach(e => {
-      s += "📜 第" + e.day + "天发布：" + e.text + "\n";
+      s += "📜 (" + (e.timeStr||e.day||"") + " 发布)：" + e.text + "\n";
     });
-    s += "以上圣旨对所有角色公开透明，无人可以不知晓。如当前场景对话涉及圣旨内容，你必须严格按照圣旨来回应。\n";
+    s += "\n";
   }
 
-  s += "\n【角色档案】只使用被选中的角色，未选角色不存在、不说话。\n";
-  selectedCharacters().forEach(c => {
-    s += "◆ " + c.name + "｜" + c.gender + "｜" + getAge(c) + "岁｜居" + c.home + "｜当前在：" + c.location + "\n";
-    s += "  人设：" + c.persona + "\n";
-    if(c.hidden) s += "  欲望档案（用于塑造反应，不要像清单一样念出）：" + c.hidden + "\n";
-  });
-  s += "\n【本次回应角色】" + target.name + "（" + getAge(target) + "岁）\n\n【扮演规则】\n";
-  s += "1. 只以「" + target.name + "」的身份回应，可描写她的动作、神态、身体反应、心理和对白，也可写必要的景物与其他在场者的轻微反应。但绝不代替" + pl.name + "说话、决定他的动作或描述他的内心。\n";
-  s += "2. 绝不代替其他AI角色说话或替他们做决定。你只负责" + target.name + "一人。\n";
-  s += "3. 绝不在你的台词中写出" + pl.name + "的对话——" + pl.name + "的对话由玩家自行输入。你只需回应他的言行。\n";
-  s += "4. 动作、神态、旁白放在（）中；心理放在（）内并用两个星号包裹。\n";
-  s += "5. 永久牢记对话中的承诺、偏好、关系进展、时间、地点和每次亲密经历，后续主动呼应。\n";
-  s += "6. 若刚被召唤，先自然写她赶来；若正在亲密场景中，则直接延续当前动作，不要重新开场。\n";
-  s += "7. 使用古风白话与香艳细腻的笔触。\n";
-  s += "8. 如果上一轮玩家用（）写了他的动作（如「（程默一把将怡儿按在龙榻上）」），你必须严格承接这些动作——他做了什么你就从那里接着写角色的反应和后续局面。\n";
-  // 回复字数控制
+  // 角色档案：目标角色详细，其他角色只给一句话，避免 prompt 过长导致 AI 抓不住重点
+  s += "【你要扮演的角色（详细档案）】\n";
+  s += "◆ " + target.name + "｜" + target.gender + "｜" + getAge(target) + "岁｜身份：" + target.home + "｜此刻在：" + target.location + "\n";
+  s += "人设与性格：" + target.persona + "\n";
+  if(target.hidden) s += "内心与欲望（只用于塑造你的反应，不要直接念出）：" + target.hidden + "\n";
+  s += "\n【其他在场角色（仅作背景，你不是他们，不得替他们说话或替他们做决定）】\n";
+  const others = selectedCharacters().filter(c => c.id !== target.id);
+  if(others.length){
+    others.forEach(c => {
+      s += "· " + c.name + "（" + c.gender + "，" + getAge(c) + "岁，" + c.location + "）——" + (c.persona||"").slice(0,40) + "\n";
+    });
+  }else{
+    s += "（无）\n";
+  }
+
+  s += "\n【扮演铁律】\n";
+  s += "1. 你只输出「" + target.name + "」的言行。动作、神态、旁白写在（）里；内心想法写在（）内并用两个星号包裹。\n";
+  s += "2. 绝不替" + pl.name + "说话、不替" + pl.name + "做决定、不描写" + pl.name + "的内心。" + pl.name + "的言行由玩家自己输入。\n";
+  s += "3. 绝不替其他角色说话或替他们做任何决定。其他角色说了什么，只会在对话历史里以「（同时，XX说：…）」的形式告诉你，你只需按你的角色身份对当前局面做出回应。\n";
+  s += "4. 严格承接上一轮：先回应" + pl.name + "刚才的言行（包括他用（）描写的动作），再自然推进。若上一轮他写了动作，比如「（" + pl.name + "一把将她按在龙榻上）」，你就从被按倒的那一刻接着写你的反应，不要重开场景、不要跳戏。\n";
+  s += "5. 记住并呼应之前发生的所有事：承诺、关系进展、亲密经历、说过的话、时间地点。前后要连贯，不要自相矛盾。\n";
+  s += "6. 若你刚被召唤，先写你从" + target.home + "赶来的过程；若本就在场或正处亲密中，直接续写当前动作。\n";
+  s += "7. 语言用古风白话，符合你的身份和性格。称呼、语气、用词要和你的设定一致。\n";
+
+  // 回复字数
   const rl = parseInt(state.replyLength) || 500;
   if(rl > 0){
-    s += "9. 本次回复请控制在约 " + rl + " 字左右（可在±20%内浮动），不要过长也不要过短，务必在该字数范围内完成回应。\n";
+    s += "8. 本次回复控制在约 " + rl + " 字（±20%），聚焦当前情节，不跑题、不重复、不说无关内容。\n";
   }
 
   if(state.adultMode && getAge(target) >= 18 && state.playerAge >= 18){
-    s += "\n【18+纯成人模式】本段所有参与者均已成年。只要角色自愿，就直接、完整、露骨地续写，不回避、不打码、不含蓄带过、不跳步、不以次日清晨代替过程。\n";
-    s += "· 动作要具体生动：亲吻、抚摸、揉捏、舔舐、口交、乳交、脱衣、进入、抽送、体位变换、高潮、射精及事后温存。性器官直接称呼。\n";
-    s += "· 感官要细：体温、皮肤触感、湿润程度、被撑开或被包裹的感觉、腰臀碰撞、腿间收缩、呼吸停顿、心跳、汗水与淫水、呻吟和肉体声响。\n";
-    s += "· 淫语要多：亲密场景至少安排3~6句符合角色身份的露骨对白，包括求欢、夸奖、下流称呼、描述感受、要求快慢深浅、高潮时的浪叫。不用省略号或「嗯啊」凑数。\n";
-    s += "· 保持差异：每个角色的措辞和反应都要符合各自档案。\n";
-    s += "· 不得出现未成年、醉酒失去同意能力的情节。角色有权喊停。\n";
+    s += "\n【18+ 成人模式】本段参与者均已成年。可写露骨的亲吻、抚摸、揉捏、舔舐、口交、乳交、脱衣、进入、抽送、体位、高潮、射精、事后温存；写具体感官（体温、湿润、被撑开、腰臀碰撞、腿间收缩、呼吸、汗水、淫水、呻吟、肉体声响）。性器官可直接称呼。亲密场景配3~6句符合角色的露骨对白与浪叫，不只用省略号。各角色反应须符合其设定差异。不得出现未成年、醉酒失能情节。\n";
   }else{
-    s += "\n【成人模式未开启或参与者不符合成年条件】只写非露骨互动；绝不生成涉及未成年人的性暗示或色情内容。\n";
+    s += "\n【当前不可写露骨内容】只写正常互动。\n";
   }
   return s;
 }
@@ -568,7 +601,7 @@ function buildHistory(target, limit){
     if(m.isNarration){
       pendingContext += (pendingContext ? "\n" : "") + "（旁白：" + m.text + "）";
     }else if(m.isEdict){
-      pendingContext += (pendingContext ? "\n" : "") + "（📜 圣旨发布：" + m.text + "）";
+      pendingContext += (pendingContext ? "\n" : "") + "（📜 圣旨：" + m.text + "）";
     }else if(m.speakerId === target.id){
       // 目标AI自己的话 → 先flush上下文，再放assistant
       flushContext();
@@ -578,8 +611,8 @@ function buildHistory(target, limit){
       flushContext();
       out.push({role:"user", content: playerName + "：" + m.text});
     }else{
-      // 其他AI角色的话 → 折叠为上下文
-      pendingContext += (pendingContext ? "\n" : "") + "（同时，" + m.speakerName + "：" + m.text + "）";
+      // 其他AI角色的话 → 折叠为上下文，明确标注「这是别人的发言」
+      pendingContext += (pendingContext ? "\n" : "") + "（场景补充——" + m.speakerName + "刚才说/做了：" + m.text + "。这只是背景信息，你不是" + m.speakerName + "，不要模仿或代他回应。）";
     }
   }
   flushContext();
@@ -604,7 +637,7 @@ async function callDeepSeek(apiKey, model, messages){
   const res = await fetch("https://api.deepseek.com/chat/completions", {
     method:"POST",
     headers:{"Content-Type":"application/json", "Authorization":"Bearer " + apiKey},
-    body: JSON.stringify({model, messages, temperature:1.2, max_tokens:8192, stream:false})
+    body: JSON.stringify({model, messages, temperature:0.9, max_tokens:4096, stream:false})
   });
   if(!res.ok){
     let body = "";
@@ -656,7 +689,7 @@ function renderChat(){
     if(m.isNarration){
       html += "<div class='msg narr'>" + formatStory(m.text) + "</div>";
     }else if(m.isEdict){
-      html += "<div class='msg edict'><div class='bubble'><div class='edict-lbl'>📜 皇帝圣旨 · 永武" + m.time.day + "天</div>" + formatStory(m.text) + "</div></div>";
+      html += "<div class='msg edict'><div class='bubble'><div class='edict-lbl'>📜 皇帝圣旨 · " + timeLabel(m.time) + "</div>" + formatStory(m.text) + "</div></div>";
     }else if(m.isPlayer){
       html += "<div class='msg player'><div class='bubble'>" + formatStory(m.text) + "</div></div>";
     }else{
@@ -803,7 +836,7 @@ function startGame(){
   state.characters = defaultCharacters();
   state.messages = [];
   state.edicts = [];
-  state.time = {day:1, minutes:20*60};
+  state.time = {year:1, month:1, day:1, minutes:20*60};
   state.playerLocation = getLocations()[0].name;
   state.replyTargetIds = [];
   state.started = true;
@@ -847,6 +880,8 @@ function continueSave(id){
   const s = saves.find(x => x.id === id);
   if(!s) return;
   state = Object.assign(freshState(), s.data || {});
+  // 兼容旧存档的时间结构 {day, minutes} → {year, month, day, minutes}
+  state.time = normalizeTime(state.time);
   state.isThinking = false;
   activeSaveId = id;
   showScreen();
@@ -928,8 +963,9 @@ function dismiss(id){
   save(); renderAll(); renderMap();
 }
 function advanceTimeMin(m){
+  const old = timeLabel(state.time);
   state.time = advanceTime(state.time, m);
-  addNarration("（时光流转，已是" + timeLabel(state.time) + "。）");
+  addNarration("（时光流转，从" + old + "来到" + timeLabel(state.time) + "。所有人都感知到了这段时间的流逝。）");
   save(); renderAll();
   document.getElementById("timeBig").textContent = timeLabel(state.time);
 }
@@ -1060,7 +1096,7 @@ function renderEdict(){
   state.edicts.forEach(e => {
     html += "<div class='edict-item'>"
       + "<div class='etext'>📜 " + escapeHtml(e.text) + "</div>"
-      + "<div class='emeta'>第" + e.day + "天</div>"
+      + "<div class='emeta'>" + (e.timeStr || e.time || "") + "</div>"
       + "<button class='sbtn del' style='font-size:11px;padding:4px 8px' onclick='removeEdict(\"" + e.id + "\")'>✕</button></div>";
   });
   el.innerHTML = html;
@@ -1311,7 +1347,7 @@ document.addEventListener("DOMContentLoaded", function(){
 
   document.getElementById("mapBtn").addEventListener("click", ()=>{ renderMap(); openModal("mapModal"); });
   document.getElementById("edictBtn").addEventListener("click", ()=>{ renderEdict(); openModal("edictModal"); });
-  document.getElementById("timeBtn").addEventListener("click", ()=>{ document.getElementById("timeBig").textContent=timeLabel(state.time); document.getElementById("customMin").value=60; document.getElementById("customMinLabel").textContent=60; openModal("timeModal"); });
+  document.getElementById("timeBtn").addEventListener("click", ()=>{ document.getElementById("timeBig").textContent=timeLabel(state.time); document.getElementById("customMin").value=60; document.getElementById("customMinLabel").textContent="60 分钟"; openModal("timeModal"); });
   document.getElementById("settingsBtn").addEventListener("click", ()=>{ renderSettings(); openModal("settingsModal"); });
   document.querySelectorAll("[data-close]").forEach(b=>b.addEventListener("click", closeModal));
   document.querySelectorAll(".modal").forEach(m=>m.addEventListener("click", function(e){ if(e.target===m) closeModal(); }));
@@ -1340,7 +1376,7 @@ document.addEventListener("DOMContentLoaded", function(){
     if(this.files && this.files[0]){ handleAvatarPicked(this.files[0]); this.value = ""; }
   });
 
-  document.getElementById("customMin").addEventListener("input", function(){ document.getElementById("customMinLabel").textContent = this.value; });
+  document.getElementById("customMin").addEventListener("input", function(){ document.getElementById("customMinLabel").textContent = fmtDuration(this.value); });
   document.getElementById("settingsKey").addEventListener("input", function(){ state.apiKey = this.value; save(); });
   document.getElementById("settingsModel").addEventListener("change", function(){ state.model = this.value; save(); });
   document.getElementById("settingsMem").addEventListener("input", function(){ state.contextLimit = parseInt(this.value); document.getElementById("memLabel").textContent = this.value; save(); });
