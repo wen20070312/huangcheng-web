@@ -225,8 +225,9 @@ b{color:var(--accent);}
       <div class="modal-head"><span class="t">皇宫舆图</span><button class="iconbtn" data-close>✕</button></div>
       <div class="modal-body" id="mapBody"></div>
       <div class="modal-body" style="border-top:1px solid var(--line); padding-top:10px">
-        <button class="btn-secondary" id="mapAddLocationBtn" style="margin-top:0">＋ 新增地点</button>
-        <div class="hint" style="text-align:center; margin-top:8px">新增或编辑的地点会立即让所有 AI 角色知晓。</div>
+        <button class="btn-secondary" id="mapAddCharacterBtn" style="margin-top:0">＋ 新增角色</button>
+        <button class="btn-secondary" id="mapAddLocationBtn" style="margin-top:10px">＋ 新增地点</button>
+        <div class="hint" style="text-align:center; margin-top:8px">新增的角色或地点会立即让所有 AI 知晓。</div>
       </div>
     </div>
   </div>
@@ -241,6 +242,26 @@ b{color:var(--accent);}
         <div class="editor-field"><label>地点简介</label><textarea id="locEditDesc" rows="4" placeholder="描写这个地点的样子、氛围、用途……AI 角色会实时知晓这些信息。"></textarea></div>
         <button class="btn-primary" id="locEditSaveBtn">保存地点</button>
         <button class="danger-btn" id="locEditDeleteBtn" style="margin-top:8px">删除此地点</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新增角色弹窗 -->
+  <div id="charAddModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head"><span class="t">＋ 新增角色</span><button class="iconbtn" data-close>✕</button></div>
+      <div class="modal-body">
+        <div class="editor-field"><label>姓名</label><input id="charAddName" placeholder="例如：柳如烟"></div>
+        <div class="editor-field"><div class="row"><div><label>性别</label>
+          <select id="charAddGender"><option value="女">女</option><option value="男">男</option><option value="不限">不限</option></select>
+        </div><div><label>年龄（≥18）</label><input id="charAddAge" type="number" min="18" max="99" value="20"></div></div></div>
+        <div class="editor-field"><label>住所（初始所在的地点）</label>
+          <select id="charAddHome"></select>
+        </div>
+        <div class="editor-field"><label>头像图片 URL（可选，留空则显示首字）</label><input id="charAddImg" placeholder="https://图片地址.jpg（留空则用首字头像）"></div>
+        <div class="editor-field"><label>人设 / 性格</label><textarea id="charAddPersona" rows="4" placeholder="描述这个角色的外貌、性格、身份、背景……"></textarea></div>
+        <div class="editor-field"><label>内心与欲望（hidden 档案，AI 自己知道但不会直接念出）</label><textarea id="charAddHidden" rows="3" placeholder="性取向、性癖、内心秘密……可留空"></textarea></div>
+        <button class="btn-primary" id="charAddSaveBtn">添加角色</button>
       </div>
     </div>
   </div>
@@ -1162,6 +1183,54 @@ function deleteLocEdit(){
   toast("地点已删除");
 }
 
+// ========== 游戏内新增角色 ==========
+function openCharAdd(){
+  // 填充住所下拉框
+  const sel = document.getElementById("charAddHome");
+  let html = "";
+  getLocations().forEach(l => { html += "<option value=\"" + escapeHtml(l.name) + "\">" + escapeHtml(l.name) + "</option>"; });
+  sel.innerHTML = html;
+  document.getElementById("charAddName").value = "";
+  document.getElementById("charAddGender").value = "女";
+  document.getElementById("charAddAge").value = "20";
+  document.getElementById("charAddImg").value = "";
+  document.getElementById("charAddPersona").value = "";
+  document.getElementById("charAddHidden").value = "";
+  openModal("charAddModal");
+}
+function saveCharAdd(){
+  const name = document.getElementById("charAddName").value.trim();
+  if(!name){ toast("请填写角色姓名"); return; }
+  const gender = document.getElementById("charAddGender").value;
+  let age = parseInt(document.getElementById("charAddAge").value);
+  if(isNaN(age) || age < 18){ age = 18; }
+  age = Math.min(99, Math.max(18, age));
+  const home = document.getElementById("charAddHome").value;
+  const img = document.getElementById("charAddImg").value.trim();
+  const persona = document.getElementById("charAddPersona").value.trim() || (name + "是新加入的角色。");
+  const hidden = document.getElementById("charAddHidden").value.trim();
+  const id = "ch" + Date.now();
+  const newChar = {
+    id:id, name:name, gender:gender, age:age, home:home,
+    color:"#" + Math.floor(Math.random()*0xffffff).toString(16).padStart(6,"0"),
+    img:img, persona:persona, hidden:hidden
+  };
+  // 1. 持久化到自定义角色配置（这样以后新开游戏也保留）
+  if(!state._cfgCharacters) state._cfgCharacters = getCharacters().map(c => Object.assign({}, c));
+  state._cfgCharacters.push(Object.assign({}, newChar));
+  saveCustomConfig({characters: state._cfgCharacters});
+  // 2. 立即加入当前游戏
+  const runtimeChar = Object.assign({}, newChar, {location:home});
+  state.characters.push(runtimeChar);
+  state.selectedIds.push(id);
+  // 3. 旁白提示
+  addNarration("（" + name + "（" + gender + "，" + age + "岁）加入了你的世界，此刻正在" + home + "。所有角色都已知道这个人物的存在。）");
+  save();
+  closeModal();
+  renderMap(); renderAll();
+  toast("✅ 角色「" + name + "」已加入游戏");
+}
+
 // ========== 剧本编辑器 ==========
 function openEditor(){
   renderEditor();
@@ -1406,6 +1475,10 @@ document.addEventListener("DOMContentLoaded", function(){
   document.getElementById("mapAddLocationBtn").addEventListener("click", ()=>{ openLocEdit(null); });
   document.getElementById("locEditSaveBtn").addEventListener("click", saveLocEdit);
   document.getElementById("locEditDeleteBtn").addEventListener("click", deleteLocEdit);
+
+  // 新增角色
+  document.getElementById("mapAddCharacterBtn").addEventListener("click", openCharAdd);
+  document.getElementById("charAddSaveBtn").addEventListener("click", saveCharAdd);
 
   showScreen();
 });
