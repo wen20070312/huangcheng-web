@@ -118,8 +118,8 @@ b{color:var(--accent);}
 .settings-row label{font-size:14px; font-weight:600; display:block; margin-bottom:6px;}
 .danger-btn{width:100%; background:none; border:1px solid var(--accent); color:var(--accent); border-radius:10px; padding:11px; font-size:14px; margin-bottom:8px;}
 .link-btn{color:var(--accent); font-size:13px;}
-#toast{position:fixed; left:50%; bottom:120px; transform:translateX(-50%); background:rgba(0,0,0,.85); color:#ede0c8; padding:10px 16px; border-radius:10px; font-size:13px; z-index:99; max-width:85%; text-align:center; pointer-events:none; transition:.2s;}
-#toast.show{opacity:1; transition:none;}
+#toast{position:fixed; left:50%; bottom:120px; transform:translateX(-50%); background:rgba(0,0,0,.85); color:#ede0c8; padding:10px 16px; border-radius:10px; font-size:13px; z-index:99; max-width:85%; text-align:center; pointer-events:none; opacity:0; transition:opacity .2s;}
+#toast.show{opacity:1;}
 .centermini{color:var(--ink2); font-size:13px; text-align:center; padding:8px;}
 .save-row{display:flex; align-items:center; gap:8px; padding:10px 0; border-bottom:1px solid var(--line);}
 .save-row:last-child{border-bottom:none;}
@@ -647,7 +647,7 @@ function avatarHtml(name, color, size, img){
   }
   return "<div class='avatar' style='width:"+size+"px;height:"+size+"px;font-size:"+Math.round(size*0.45)+"px;background:"+color+"'>"+escapeHtml(name[0])+"</div>";
 }
-function escapeHtml(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function escapeHtml(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
 function renderChat(){
   const el = document.getElementById("chat");
@@ -977,13 +977,11 @@ async function send(text){
   try{
     for(const t of targets){
       let messages = [{role:"system", content: buildSystemPrompt(t)}];
-
-      // 如果有玩家（）动作，作为额外指令注入
+      messages = messages.concat(buildHistory(t, state.contextLimit));
+      // 如果有玩家（）动作，作为最后一条 user 消息注入，紧跟玩家最新发言之后
       if(actions.length){
         messages.push({role:"user", content: "（" + playerName + "的动作指示——你必须在回应中严格承接以下动作：" + actions.join("；") + "）"});
       }
-
-      messages = messages.concat(buildHistory(t, state.contextLimit));
       const reply = await callDeepSeek(state.apiKey, state.model, messages);
       pushMessage({speakerId:t.id, speakerName:t.name, text:reply, isPlayer:false});
       save(); renderChat();
