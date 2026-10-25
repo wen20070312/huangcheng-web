@@ -480,14 +480,14 @@ function loadSaves(){
 function loadSettings(){
   try{
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-    if(s){ state.apiKey = s.apiKey || ""; state.model = s.model || "deepseek-flash"; state.adultMode = s.adultMode === undefined ? true : !!s.adultMode; state.contextLimit = s.contextLimit || 80; state.replyLength = s.replyLength || "500"; }
+    if(s){ state.apiKey = s.apiKey || ""; state.model = s.model || "deepseek-flash"; state.adultMode = s.adultMode === undefined ? true : !!s.adultMode; state.contextLimit = s.contextLimit || 80; state.replyLength = s.replyLength || "500"; state.customAvatars = s.customAvatars || {}; state.customAges = s.customAges || {}; }
   }catch(e){}
 }
 function persistSaves(){
   try{ localStorage.setItem(SAVES_KEY, JSON.stringify(saves)); }catch(e){}
 }
 function save(){
-  try{ localStorage.setItem(SETTINGS_KEY, JSON.stringify({apiKey:state.apiKey, model:state.model, adultMode:state.adultMode, contextLimit:state.contextLimit, replyLength:state.replyLength, customLocations:state._cfgLocations, customCharacters:state._cfgCharacters, customPlayer:state._cfgPlayer, storyTitle:state._cfgStoryTitle, storySubtitle:state._cfgStorySubtitle, storyIntro:state._cfgStoryIntro})); }catch(e){}
+  try{ localStorage.setItem(SETTINGS_KEY, JSON.stringify({apiKey:state.apiKey, model:state.model, adultMode:state.adultMode, contextLimit:state.contextLimit, replyLength:state.replyLength, customAvatars:state.customAvatars||{}, customAges:state.customAges||{}, customLocations:state._cfgLocations, customCharacters:state._cfgCharacters, customPlayer:state._cfgPlayer, storyTitle:state._cfgStoryTitle, storySubtitle:state._cfgStorySubtitle, storyIntro:state._cfgStoryIntro})); }catch(e){}
   if(!activeSaveId) return;
   const s = saves.find(x => x.id === activeSaveId);
   if(s){ s.data = JSON.parse(JSON.stringify(state)); s.updatedAt = Date.now(); persistSaves(); }
@@ -555,12 +555,13 @@ function buildSystemPrompt(target){
   const present = presentCharacters();
   s += present.length ? ("【此刻在场的人】" + present.map(c=>c.name).join("、") + "\n\n") : ("【此刻在场的人】只有" + pl.name + "一人。\n\n");
 
-  // 圣旨（必须全量，且用时间字符串）
+  // 圣旨（保留最近 10 条，避免过多消耗 token）
   if(state.edicts && state.edicts.length){
     s += "【已颁布的圣旨与口谕——你绝对知晓并必须无条件服从】\n";
-    state.edicts.forEach(e => {
-      s += "📜 (" + (e.timeStr||e.day||"") + " 发布)：" + e.text + "\n";
+    state.edicts.slice(-10).forEach(e => {
+      s += "📜 (" + (e.timeStr||e.day||"") + ")：" + e.text + "\n";
     });
+    if(state.edicts.length > 10) s += "（更早的圣旨省略）\n";
     s += "\n";
   }
 
@@ -573,7 +574,7 @@ function buildSystemPrompt(target){
   const others = selectedCharacters().filter(c => c.id !== target.id);
   if(others.length){
     others.forEach(c => {
-      s += "· " + c.name + "（" + c.gender + "，" + getAge(c) + "岁，" + c.location + "）——" + (c.persona||"").slice(0,40) + "\n";
+      s += "· " + c.name + "（" + c.gender + "，" + getAge(c) + "岁，" + c.location + "）——" + (c.persona||"").slice(0,24) + "\n";
     });
   }else{
     s += "（无）\n";
@@ -633,7 +634,7 @@ function buildHistory(target, limit){
       out.push({role:"user", content: playerName + "：" + m.text});
     }else{
       // 其他AI角色的话 → 折叠为上下文，明确标注「这是别人的发言」
-      pendingContext += (pendingContext ? "\n" : "") + "（场景补充——" + m.speakerName + "刚才说/做了：" + m.text + "。这只是背景信息，你不是" + m.speakerName + "，不要模仿或代他回应。）";
+      pendingContext += (pendingContext ? "\n" : "") + "（同时，" + m.speakerName + "：" + m.text + "）";
     }
   }
   flushContext();
@@ -805,26 +806,41 @@ function pickCharAvatar(id){
   document.getElementById("avatarPicker").click();
 }
 function handleAvatarPicked(file){
-  const reader = new FileReader();
-  reader.onload = function(e){
-    const dataUrl = e.target.result;
-    if(EDITOR_AVATAR_TARGET.type === "player"){
-      const pl = getPlayer();
-      const newPl = Object.assign({}, pl, {img: dataUrl});
-      state._cfgPlayer = newPl;
-      saveCustomConfig({player: newPl});
-      refreshPlayerDisplay();
-      toast("✅ 玩家头像已更新");
-    }else if(EDITOR_AVATAR_TARGET.type === "char"){
-      if(!state.customAvatars) state.customAvatars = {};
-      state.customAvatars[EDITOR_AVATAR_TARGET.id] = dataUrl;
-      renderCharSelect();
-      toast("✅ 头像已更新");
-    }
-    EDITOR_AVATAR_TARGET.type = null;
-    EDITOR_AVATAR_TARGET.id = null;
+  // 压缩头像：限制边长 256px、转 JPEG，避免 localStorage 超限
+  const img = new Image();
+  const objUrl = URL.createObjectURL(file);
+  img.onload = function(){
+    URL.revokeObjectURL(objUrl);
+    const maxSize = 256;
+    let w = img.width, h = img.height;
+    if(w > h && w > maxSize){ h = h * maxSize / w; w = maxSize; }
+    else if(h >= w && h > maxSize){ w = w * maxSize / h; h = maxSize; }
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(w); canvas.height = Math.round(h);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    let dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    applyAvatar(dataUrl);
   };
-  reader.readAsDataURL(file);
+  img.onerror = function(){ URL.revokeObjectURL(objUrl); toast("图片读取失败"); };
+  img.src = objUrl;
+}
+function applyAvatar(dataUrl){
+  if(EDITOR_AVATAR_TARGET.type === "player"){
+    const pl = getPlayer();
+    const newPl = Object.assign({}, pl, {img: dataUrl});
+    state._cfgPlayer = newPl;
+    saveCustomConfig({player: newPl});
+    refreshPlayerDisplay();
+    toast("✅ 玩家头像已更新并保存");
+  }else if(EDITOR_AVATAR_TARGET.type === "char"){
+    if(!state.customAvatars) state.customAvatars = {};
+    state.customAvatars[EDITOR_AVATAR_TARGET.id] = dataUrl;
+    save(); // 持久化角色头像到本地
+    renderCharSelect();
+    toast("✅ 头像已更新并保存");
+  }
+  EDITOR_AVATAR_TARGET.type = null;
+  EDITOR_AVATAR_TARGET.id = null;
 }
 
 function refreshPlayerDisplay(){
@@ -905,6 +921,14 @@ function continueSave(id){
   state.time = normalizeTime(state.time);
   state.isThinking = false;
   activeSaveId = id;
+  // 头像/年龄自定义是跨存档的全局设置，用最新的持久化值覆盖存档旧快照
+  try{
+    const cfg = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if(cfg){
+      if(cfg.customAvatars) state.customAvatars = cfg.customAvatars;
+      if(cfg.customAges) state.customAges = cfg.customAges;
+    }
+  }catch(e){}
   showScreen();
 }
 function deleteSave(id){
