@@ -696,25 +696,49 @@ function getActiveApiKey(){
 }
 
 // ========== AI 调用 ==========
+function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
 async function callDeepSeek(apiKey, model, messages){
   const provider = getProvider();
   const body = {model, messages, temperature:0.9, max_tokens:4096, stream:false};
   // 智谱 GLM 额外关闭思考模式（thinking 默认可能开启，纯对话游戏不需要）
   if(state.provider === "zhipu"){ body.thinking = {type:"disabled"}; }
-  const res = await fetch(provider.endpoint, {
-    method:"POST",
-    headers:{"Content-Type":"application/json", "Authorization":"Bearer " + apiKey},
-    body: JSON.stringify(body)
-  });
-  if(!res.ok){
-    let errBody = "";
-    try{ errBody = await res.text(); }catch(e){}
-    throw new Error("请求失败(" + res.status + ")：" + errBody.slice(0,300));
+
+  let lastError = null;
+  // 自动重试：网络错误、5xx、429 时最多重试 3 次，间隔递增
+  for(let attempt = 0; attempt < 3; attempt++){
+    try{
+      const res = await fetch(provider.endpoint, {
+        method:"POST",
+        headers:{"Content-Type":"application/json", "Authorization":"Bearer " + apiKey},
+        body: JSON.stringify(body)
+      });
+      if(!res.ok){
+        let errBody = "";
+        try{ errBody = await res.text(); }catch(e){}
+        // 4xx 认证/参数错误不重试；5xx、429 等重试
+        const retryable = res.status >= 500 || res.status === 429 || res.status === 403;
+        if(!retryable || attempt === 2){
+          throw new Error("请求失败(" + res.status + ")：" + errBody.slice(0,300));
+        }
+        lastError = new Error("请求失败(" + res.status + ")：" + errBody.slice(0,120));
+        await sleep(1000 * (attempt + 1));
+        continue;
+      }
+      const data = await res.json();
+      const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      if(!content || !content.trim()) throw new Error("AI 没有返回内容，请重试");
+      return content.trim();
+    }catch(e){
+      // fetch 网络异常（TypeError）也重试
+      if(e instanceof TypeError && attempt < 2){
+        lastError = e;
+        await sleep(1000 * (attempt + 1));
+        continue;
+      }
+      throw e;
+    }
   }
-  const data = await res.json();
-  const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-  if(!content || !content.trim()) throw new Error("AI 没有返回内容，请重试");
-  return content.trim();
+  throw lastError || new Error("请求失败，请重试");
 }
 
 // ========== 消息 ==========
