@@ -224,6 +224,24 @@ b{color:var(--accent);}
     <div class="modal-card">
       <div class="modal-head"><span class="t">皇宫舆图</span><button class="iconbtn" data-close>✕</button></div>
       <div class="modal-body" id="mapBody"></div>
+      <div class="modal-body" style="border-top:1px solid var(--line); padding-top:10px">
+        <button class="btn-secondary" id="mapAddLocationBtn" style="margin-top:0">＋ 新增地点</button>
+        <div class="hint" style="text-align:center; margin-top:8px">新增或编辑的地点会立即让所有 AI 角色知晓。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 地点编辑弹窗 -->
+  <div id="locEditModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head"><span class="t" id="locEditTitle">编辑地点</span><button class="iconbtn" data-close>✕</button></div>
+      <div class="modal-body">
+        <div class="editor-field"><label>地点名称</label><input id="locEditName" placeholder="例如：太液池"></div>
+        <div class="editor-field"><label>图标（emoji）</label><input id="locEditIcon" placeholder="例如：🏞"></div>
+        <div class="editor-field"><label>地点简介</label><textarea id="locEditDesc" rows="4" placeholder="描写这个地点的样子、氛围、用途……AI 角色会实时知晓这些信息。"></textarea></div>
+        <button class="btn-primary" id="locEditSaveBtn">保存地点</button>
+        <button class="danger-btn" id="locEditDeleteBtn" style="margin-top:8px">删除此地点</button>
+      </div>
     </div>
   </div>
 
@@ -270,6 +288,11 @@ b{color:var(--accent);}
           <label class="switch"><input type="checkbox" id="settingsMemInf"> 无限记忆（记住全部历史）</label>
           <input type="range" class="slider" id="settingsMem" min="20" max="200" step="10" value="80" style="margin-top:10px">
           <div class="hint">记忆长度：最近 <span id="memLabel">80</span> 条对话。勾选「无限」会带上全部历史，越久越可能接近 DeepSeek 上下文上限、也越耗 Token。</div>
+        </div>
+        <div class="settings-row">
+          <label>AI 回复字数</label>
+          <input type="range" class="slider" id="settingsReplyLen" min="100" max="2000" step="100" value="500" style="margin-top:10px">
+          <div class="hint">AI 每次回复约 <span id="replyLenLabel">500</span> 字（可在±20%浮动）。拖到 2000 表示超长，100 表示简短。</div>
         </div>
         <div class="settings-row">
           <label class="switch"><input type="checkbox" id="settingsAdult"> 18+ 纯成人模式</label>
@@ -382,31 +405,34 @@ function saveCustomConfig(config){
   }catch(e){}
 }
 function getLocations(){
-  return (state._cfgLocations && state._cfgLocations.length) ? state._cfgLocations : DEFAULT_LOCATIONS;
+  return (state && state._cfgLocations && state._cfgLocations.length) ? state._cfgLocations : DEFAULT_LOCATIONS;
 }
 function getCharacters(){
-  return (state._cfgCharacters && state._cfgCharacters.length) ? state._cfgCharacters : DEFAULT_CHARACTERS;
+  return (state && state._cfgCharacters && state._cfgCharacters.length) ? state._cfgCharacters : DEFAULT_CHARACTERS;
 }
 function getPlayer(){
-  return state._cfgPlayer || DEFAULT_PLAYER;
+  return (state && state._cfgPlayer) || DEFAULT_PLAYER;
 }
-function getStoryTitle(){ return state._cfgStoryTitle || DEFAULT_STORY_TITLE; }
-function getStorySubtitle(){ return state._cfgStorySubtitle || DEFAULT_STORY_SUBTITLE; }
-function getStoryIntro(){ return state._cfgStoryIntro || DEFAULT_STORY_INTRO; }
+function getStoryTitle(){ return (state && state._cfgStoryTitle) || DEFAULT_STORY_TITLE; }
+function getStorySubtitle(){ return (state && state._cfgStorySubtitle) || DEFAULT_STORY_SUBTITLE; }
+function getStoryIntro(){ return (state && state._cfgStoryIntro) || DEFAULT_STORY_INTRO; }
 
 function defaultCharacters(){
   return getCharacters().map(c => Object.assign({}, c, {location:c.home}));
 }
 function freshState(){
   const cfg = loadCustomConfig();
+  // 直接用 cfg 初始化角色，避免在 state 尚未赋值时调用 getCharacters()（state 此时为 null 会崩溃）
+  const baseChars = (cfg.characters && cfg.characters.length) ? cfg.characters : DEFAULT_CHARACTERS;
+  const baseLocs = (cfg.locations && cfg.locations.length) ? cfg.locations : DEFAULT_LOCATIONS;
   return {
-    started:false, selectedIds:[], characters:defaultCharacters(), messages:[], edicts:[],
-    playerLocation:(cfg.locations&&cfg.locations.length?cfg.locations[0].name:"乾清宫"),
+    started:false, selectedIds:[], characters:baseChars.map(c => Object.assign({}, c, {location:c.home})), messages:[], edicts:[],
+    playerLocation: baseLocs[0].name,
     time:{day:1, minutes:20*60},
     adultMode:true, apiKey:"", model:"deepseek-flash", contextLimit:80,
     replyTargetIds:[], isThinking:false,
     playerAge:((cfg.player||DEFAULT_PLAYER).age||32),
-    customAges:{}, customAvatars:{},
+    customAges:{}, customAvatars:{}, replyLength:(cfg.replyLength||"500"),
     _cfgLocations: cfg.locations, _cfgCharacters: cfg.characters,
     _cfgPlayer: cfg.player, _cfgStoryTitle: cfg.storyTitle,
     _cfgStorySubtitle: cfg.storySubtitle, _cfgStoryIntro: cfg.storyIntro,
@@ -420,14 +446,14 @@ function loadSaves(){
 function loadSettings(){
   try{
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-    if(s){ state.apiKey = s.apiKey || ""; state.model = s.model || "deepseek-flash"; state.adultMode = s.adultMode === undefined ? true : !!s.adultMode; state.contextLimit = s.contextLimit || 80; }
+    if(s){ state.apiKey = s.apiKey || ""; state.model = s.model || "deepseek-flash"; state.adultMode = s.adultMode === undefined ? true : !!s.adultMode; state.contextLimit = s.contextLimit || 80; state.replyLength = s.replyLength || "500"; }
   }catch(e){}
 }
 function persistSaves(){
   try{ localStorage.setItem(SAVES_KEY, JSON.stringify(saves)); }catch(e){}
 }
 function save(){
-  try{ localStorage.setItem(SETTINGS_KEY, JSON.stringify({apiKey:state.apiKey, model:state.model, adultMode:state.adultMode, contextLimit:state.contextLimit, customLocations:state._cfgLocations, customCharacters:state._cfgCharacters, customPlayer:state._cfgPlayer, storyTitle:state._cfgStoryTitle, storySubtitle:state._cfgStorySubtitle, storyIntro:state._cfgStoryIntro})); }catch(e){}
+  try{ localStorage.setItem(SETTINGS_KEY, JSON.stringify({apiKey:state.apiKey, model:state.model, adultMode:state.adultMode, contextLimit:state.contextLimit, replyLength:state.replyLength, customLocations:state._cfgLocations, customCharacters:state._cfgCharacters, customPlayer:state._cfgPlayer, storyTitle:state._cfgStoryTitle, storySubtitle:state._cfgStorySubtitle, storyIntro:state._cfgStoryIntro})); }catch(e){}
   if(!activeSaveId) return;
   const s = saves.find(x => x.id === activeSaveId);
   if(s){ s.data = JSON.parse(JSON.stringify(state)); s.updatedAt = Date.now(); persistSaves(); }
@@ -472,7 +498,9 @@ function buildSystemPrompt(target){
   const pl = getPlayer();
   let s = "你是角色扮演引擎。玩家扮演" + pl.name + "。严格依据以下设定回应，不跳出角色，不提及自己是AI。\n\n";
   s += "【背景】" + getStoryIntro() + "\n\n";
-  s += "【地点】" + getLocations().map(l=>l.name).join("、") + "。角色只有与" + pl.name + "处于同一地点才能当面互动；被召唤后会从原住处赶来。\n\n";
+  s += "【地点】以下是当前所有地点及其简介（你必须实时知晓每一个地点，即使它是新出现或刚被修改的）：\n";
+  getLocations().forEach(l => { s += "· " + l.name + "：" + (l.desc||"（无简介）") + "\n"; });
+  s += "角色只有与" + pl.name + "处于同一地点才能当面互动；被召唤后会从原住处赶来。\n\n";
   s += "【当前状态】\n时间：" + timeLabel(state.time) + "\n" + pl.name + "位置：" + state.playerLocation + "\n";
   const present = presentCharacters();
   s += present.length ? ("此刻在场：" + present.map(c=>c.name + "（" + getAge(c) + "岁）").join("、") + "\n") : "此刻" + pl.name + "身边没有其他角色。\n";
@@ -499,8 +527,13 @@ function buildSystemPrompt(target){
   s += "4. 动作、神态、旁白放在（）中；心理放在（）内并用两个星号包裹。\n";
   s += "5. 永久牢记对话中的承诺、偏好、关系进展、时间、地点和每次亲密经历，后续主动呼应。\n";
   s += "6. 若刚被召唤，先自然写她赶来；若正在亲密场景中，则直接延续当前动作，不要重新开场。\n";
-  s += "7. 使用古风白话与香艳细腻的笔触。通常每轮400~900字；完整场景可1000~2000字。\n";
+  s += "7. 使用古风白话与香艳细腻的笔触。\n";
   s += "8. 如果上一轮玩家用（）写了他的动作（如「（程默一把将怡儿按在龙榻上）」），你必须严格承接这些动作——他做了什么你就从那里接着写角色的反应和后续局面。\n";
+  // 回复字数控制
+  const rl = parseInt(state.replyLength) || 500;
+  if(rl > 0){
+    s += "9. 本次回复请控制在约 " + rl + " 字左右（可在±20%内浮动），不要过长也不要过短，务必在该字数范围内完成回应。\n";
+  }
 
   if(state.adultMode && getAge(target) >= 18 && state.playerAge >= 18){
     s += "\n【18+纯成人模式】本段所有参与者均已成年。只要角色自愿，就直接、完整、露骨地续写，不回避、不打码、不含蓄带过、不跳步、不以次日清晨代替过程。\n";
@@ -966,16 +999,19 @@ function openModal(id){ document.getElementById(id).hidden = false; }
 function closeModal(){ document.querySelectorAll(".modal").forEach(m=>m.hidden=true); }
 function renderMap(){
   const el = document.getElementById("mapBody");
-  let html = "<div class='section-title'>皇宫 · 点击即可移驾</div>";
+  let html = "<div class='section-title'>皇宫 · 点击地点名称移驾，点 ✏ 编辑简介</div>";
   getLocations().forEach(loc => {
     const here = state.playerLocation === loc.name;
     const people = selectedCharacters().filter(c=>c.location===loc.name);
-    html += "<div class='loc-row' onclick='moveTo(\"" + loc.id + "\")'>"
-      + "<span class='ic'>" + loc.icon + "</span>"
-      + "<div style='flex:1'><div class='loc-name'>" + loc.name + (here ? " <span class='here-tag'>你在这里</span>":"") + "</div>"
-      + "<div class='loc-desc'>" + escapeHtml(loc.desc) + "</div>"
+    html += "<div class='loc-row' style='cursor:default'>"
+      + "<span class='ic'>" + (loc.icon||"📍") + "</span>"
+      + "<div style='flex:1; cursor:pointer' onclick='moveTo(\"" + loc.id + "\")'>"
+      + "<div class='loc-name'>" + escapeHtml(loc.name) + (here ? " <span class='here-tag'>你在这里</span>":"") + "</div>"
+      + "<div class='loc-desc'>" + escapeHtml(loc.desc||"") + "</div>"
       + (people.length ? "<div class='loc-people'>在场：" + people.map(c=>c.name).join("、") + "</div>" : "")
-      + "</div></div>";
+      + "</div>"
+      + "<button class='inline-btn' onclick='openLocEdit(\"" + loc.id + "\")' title='编辑地点'>✏</button>"
+      + "</div>";
   });
   const elsewhere = selectedCharacters().filter(c => c.location !== state.playerLocation);
   html += "<div class='section-title'>传召到驾前</div>";
@@ -1012,6 +1048,9 @@ function renderSettings(){
   document.getElementById("settingsMem").value = inf ? 200 : state.contextLimit;
   document.getElementById("memLabel").textContent = inf ? "无限" : state.contextLimit;
   document.getElementById("settingsAdult").checked = state.adultMode;
+  const rl = parseInt(state.replyLength) || 500;
+  document.getElementById("settingsReplyLen").value = rl;
+  document.getElementById("replyLenLabel").textContent = rl;
 }
 function renderEdict(){
   const el = document.getElementById("edictList");
@@ -1032,6 +1071,61 @@ function removeEdict(id){
   state.edicts = state.edicts.filter(e => e.id !== id);
   save(); renderEdict();
   toast("圣旨已撤销");
+}
+
+// ========== 游戏内地点编辑 ==========
+let locEditTargetId = null; // null 表示新增
+function openLocEdit(locId){
+  locEditTargetId = locId;
+  const loc = getLocations().find(l => l.id === locId);
+  document.getElementById("locEditTitle").textContent = loc ? ("编辑地点：" + loc.name) : "新增地点";
+  document.getElementById("locEditName").value = loc ? (loc.name||"") : "";
+  document.getElementById("locEditIcon").value = loc ? (loc.icon||"") : "";
+  document.getElementById("locEditDesc").value = loc ? (loc.desc||"") : "";
+  document.getElementById("locEditDeleteBtn").hidden = !loc;
+  openModal("locEditModal");
+}
+function saveLocEdit(){
+  const name = document.getElementById("locEditName").value.trim();
+  if(!name){ toast("请填写地点名称"); return; }
+  const icon = document.getElementById("locEditIcon").value.trim();
+  const desc = document.getElementById("locEditDesc").value.trim();
+  // 初始化自定义地点数组（如果还没有，复制默认）
+  if(!state._cfgLocations) state._cfgLocations = getLocations().map(l => Object.assign({}, l));
+  if(locEditTargetId){
+    // 编辑已有地点
+    const loc = state._cfgLocations.find(l => l.id === locEditTargetId);
+    if(loc){
+      const oldName = loc.name;
+      loc.name = name; loc.icon = icon; loc.desc = desc;
+      // 同步玩家当前位置与角色位置（若玩家/角色正好在那个被改名的地点）
+      if(state.playerLocation === oldName) state.playerLocation = name;
+      state.characters.forEach(c => { if(c.location === oldName) c.location = name; if(c.home === oldName) c.home = name; });
+    }
+  }else{
+    // 新增地点
+    const id = "loc" + Date.now();
+    state._cfgLocations.push({id:id, name:name, icon:icon, desc:desc});
+  }
+  saveCustomConfig({locations:state._cfgLocations});
+  save();
+  closeModal();
+  renderMap();
+  toast("✅ 地点已保存，所有 AI 角色均已实时知晓。");
+}
+function deleteLocEdit(){
+  if(!locEditTargetId){ closeModal(); return; }
+  const loc = state._cfgLocations && state._cfgLocations.find(l => l.id === locEditTargetId);
+  if(!loc){ closeModal(); return; }
+  if(state._cfgLocations.length <= 1){ toast("至少保留一个地点"); return; }
+  if(state.playerLocation === loc.name){ toast("不能删除你当前所在的地点，请先移驾他处"); return; }
+  if(!confirm("确定删除地点「" + loc.name + "」？")) return;
+  state._cfgLocations = state._cfgLocations.filter(l => l.id !== locEditTargetId);
+  saveCustomConfig({locations:state._cfgLocations});
+  save();
+  closeModal();
+  renderMap();
+  toast("地点已删除");
 }
 
 // ========== 剧本编辑器 ==========
@@ -1260,13 +1354,24 @@ document.addEventListener("DOMContentLoaded", function(){
     save();
   });
   document.getElementById("settingsAdult").addEventListener("change", function(){ state.adultMode = this.checked; save(); });
+  document.getElementById("settingsReplyLen").addEventListener("input", function(){
+    state.replyLength = this.value;
+    document.getElementById("replyLenLabel").textContent = this.value;
+    save();
+  });
   document.getElementById("settingsSaveBtn").addEventListener("click", function(){
     state.apiKey = document.getElementById("settingsKey").value.trim();
     state.model = document.getElementById("settingsModel").value;
     state.adultMode = document.getElementById("settingsAdult").checked;
     state.contextLimit = document.getElementById("settingsMemInf").checked ? 1000000 : parseInt(document.getElementById("settingsMem").value);
+    state.replyLength = document.getElementById("settingsReplyLen").value;
     save(); toast("✅ 设置已保存"); closeModal();
   });
+
+  // 地点编辑
+  document.getElementById("mapAddLocationBtn").addEventListener("click", ()=>{ openLocEdit(null); });
+  document.getElementById("locEditSaveBtn").addEventListener("click", saveLocEdit);
+  document.getElementById("locEditDeleteBtn").addEventListener("click", deleteLocEdit);
 
   showScreen();
 });
